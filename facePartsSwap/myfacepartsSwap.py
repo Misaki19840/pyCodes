@@ -31,60 +31,6 @@ def applyAffineTransform(src, srcTri, dstTri, size):
 
     return dst
 
-
-# Check if a point is inside a rectangle
-def rectContains(rect, point):
-    if point[0] < rect[0]:
-        return False
-    elif point[1] < rect[1]:
-        return False
-    elif point[0] > rect[0] + rect[2]:
-        return False
-    elif point[1] > rect[1] + rect[3]:
-        return False
-    return True
-
-
-# calculate delanauy triangle
-def calculateDelaunayTriangles(rect, points):
-    # create subdiv
-    subdiv = cv2.Subdiv2D(rect);
-
-    # Insert points into subdiv
-    for p in points:
-        subdiv.insert(p)
-
-    triangleList = subdiv.getTriangleList();
-
-    delaunayTri = []
-
-    pt = []
-
-    for t in triangleList:
-        pt.append((t[0], t[1]))
-        pt.append((t[2], t[3]))
-        pt.append((t[4], t[5]))
-
-        pt1 = (t[0], t[1])
-        pt2 = (t[2], t[3])
-        pt3 = (t[4], t[5])
-
-        if rectContains(rect, pt1) and rectContains(rect, pt2) and rectContains(rect, pt3):
-            ind = []
-            # Get face-points (from 68 face detector) by coordinates
-            for j in range(0, 3):
-                for k in range(0, len(points)):
-                    if (abs(pt[j][0] - points[k][0]) < 1.0 and abs(pt[j][1] - points[k][1]) < 1.0):
-                        ind.append(k)
-                        # Three points form a triangle. Triangle array corresponds to the file tri.txt in FaceMorph
-            if len(ind) == 3:
-                delaunayTri.append((ind[0], ind[1], ind[2]))
-
-        pt = []
-
-    return delaunayTri
-
-
 # Warps triangular regions from img1 to img2
 def warpTriangle(img1, img2, t1, t2):
     # Find bounding rectangle for each triangle
@@ -115,14 +61,15 @@ def warpTriangle(img1, img2, t1, t2):
     img2[r2[1]:r2[1] + r2[3], r2[0]:r2[0] + r2[2]] = img2[r2[1]:r2[1] + r2[3], r2[0]:r2[0] + r2[2]]*((1.0, 1.0, 1.0) - mask)
     img2[r2[1]:r2[1] + r2[3], r2[0]:r2[0] + r2[2]] = img2[r2[1]:r2[1] + r2[3], r2[0]:r2[0] + r2[2]] + img2Rect
 
-def getFacialLandmarkImg(img = "", lpos = "", tset = ""):
+def getFacialLandmarkImg(img = "", lpos = "", tset = "", color = (255, 0, 0)):
     imgshow = np.copy(img)
     for i in range(len(lpos)):
-        cv2.circle(imgshow, lpos[i], 2,  (255,0,0))
+        cv2.circle(imgshow, lpos[i], 2,  color, -1
+                   )
     for i in range(len(tset)):
-        cv2.line(imgshow, tset[i][0], tset[i][1], (255,0,0), 1)
-        cv2.line(imgshow, tset[i][0], tset[i][2], (255, 0, 0), 1)
-        cv2.line(imgshow, tset[i][2], tset[i][1], (255, 0, 0), 1)
+        cv2.line(imgshow, tset[i][0], tset[i][1], color, 1)
+        cv2.line(imgshow, tset[i][0], tset[i][2], color, 1)
+        cv2.line(imgshow, tset[i][2], tset[i][1], color, 1)
 
     return imgshow
 
@@ -156,7 +103,6 @@ def partsSwap(filename1 = "", filename2 = "", swLeye = 0, swReye = 0, swNose = 0
     dt = []
     tset1 = []
     tset2 = []
-    p_transform = []
 
     output = np.copy(img2);
     # Read triangles from tri.txt
@@ -174,10 +120,6 @@ def partsSwap(filename1 = "", filename2 = "", swLeye = 0, swReye = 0, swNose = 0
                 dt.append((x,y,z))
                 tset1.append([points1[x], points1[y], points1[z]])
                 tset2.append([points2[x], points2[y], points2[z]])
-
-                p_transform.append(points2[x])
-                p_transform.append(points2[y])
-                p_transform.append(points2[z])
 
                 tripos = []
                 tripos.append(points2[x])
@@ -217,15 +159,21 @@ def partsSwap(filename1 = "", filename2 = "", swLeye = 0, swReye = 0, swNose = 0
         cv2.imshow("img1 lamdmark", img1land)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
-        saveimgname = filename1 + "_beforewarp.jpg"
+        saveimgname = filename1 + "_beforewarp_tri.jpg"
         cv2.imwrite(saveimgname, img1land)
 
         img1landWarp = getFacialLandmarkImg(img1Warped, points2, tset2)
         cv2.imshow("img1 warp lamdmark", img1landWarp)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
-        saveimgname = filename1 + "_afterwarp.jpg"
+        saveimgname = filename1 + "_afterwarp_tri.jpg"
         cv2.imwrite(saveimgname, img1landWarp)
+
+        cv2.imshow("img1 warp", img1Warped)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+        saveimgname = filename1 + "_afterwarp.jpg"
+        cv2.imwrite(saveimgname, img1Warped)
 
     return output
 
@@ -240,7 +188,7 @@ if __name__ == '__main__':
 
     # Read images
     filename1 = 'facefld/model10211041_TP_V4.jpg'
-    filename2 = 'facefld/XEN7615021_TP_V.jpg'
+    filename2 = 'facefld/ookawa918IMGL1370_TP_V.jpg'
 
     output = partsSwap(filename1, filename2, swLeye = 1, swReye = 1, swNose = 0, swMouth = 1)
 
