@@ -2,10 +2,53 @@ import cv2
 import numpy as np
 from matplotlib import pyplot as plt
 from pylab import *
+# from sfm import triangulate
+# from sfm import compute_P_from_essential
+# from homography import make_homog
 import sfm
-from mpl_toolkits.mplot3d import axes3d
+import homography
+from mpl_toolkits.mplot3d import Axes3D
 import tkinter as Tk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+# 3次元再構成
+# １、2つの２次元画像から特徴点を対応付ける行列Fを求める（エピポーラ拘束）
+#     x2 * F * x1 =0
+# 　２、Fをカメラの内部行列で正規化したものをEとする
+# 　３、Eから外部行列Pを推定する
+# 　４、x1, x2, PからXを求める（三角測量）
+
+def calcRmat(agl_deg, nVec):
+    agl = np.deg2rad(agl_deg)
+    Rmat = np.array([
+        [np.cos(agl) + nVec[0] * nVec[0] * (1 - np.cos(agl)), nVec[0] * nVec[1] * (1 - np.cos(agl)) - nVec[2] * np.sin(agl),
+         nVec[0] * nVec[2] * (1 - np.cos(agl)) + nVec[1] * np.sin(agl)],
+        [nVec[0] * nVec[1] * (1 - np.cos(agl)) + nVec[2] * np.sin(agl), np.cos(agl) + nVec[1] * nVec[1] * (1 - np.cos(agl)),
+         nVec[1] * nVec[2] * (1 - np.cos(agl)) - nVec[0] * np.sin(agl)],
+        [nVec[0] * nVec[2] * (1 - np.cos(agl)) - nVec[1] * np.sin(agl),
+         nVec[1] * nVec[2] * (1 - np.cos(agl)) + nVec[0] * np.sin(agl), np.cos(agl) + nVec[2] * nVec[2] * (1 - np.cos(agl))]
+    ])
+    return Rmat
+
+def calcRmatDeg(Rmat):
+    theta = ( Rmat[0][0] + Rmat[1][1] + Rmat[2][2] - 1.0 ) * 0.5
+    delta = 1.0e-6
+    if (abs(theta) - 1 ) > delta: return -1, -200, -200
+    val_rad = np.arccos(theta)
+    val_deg = np.rad2deg(val_rad)
+
+    ny = (Rmat[0][2] - Rmat[2][0]) * 0.5 * ( 1.0 / np.sin(theta))
+    nx = (Rmat[2][1] - Rmat[1][2]) * 0.5 * ( 1.0 / np.sin(theta))
+    nz = (Rmat[1][0] - Rmat[0][1]) * 0.5 * ( 1.0 / np.sin(theta))
+    nvec = np.array([nx, ny, nz])
+
+    Rmat2 = calcRmat(val_deg, nvec)
+    RmatDef = Rmat - Rmat2
+
+    DefNrm = np.linalg.norm(RmatDef, "fro")
+    if DefNrm > delta: return -1, val_deg, DefNrm
+
+    return 1, val_deg, DefNrm
 
 class TKExample():
 
@@ -17,15 +60,7 @@ class TKExample():
         # 設定
         self.Focal = 200
         self.Imgwidth, self.Imgheight = 640, 480
-        self.Ang_x_cam1 = 0
-        self.Ang_y_cam1 = 0
-        self.Ang_z_cam1 = 0
-        self.Trans_x_cam1 = 0
-        self.Trans_y_cam1 = 0
-        self.Trans_z_cam1 = 0
-        self.Ang_x_cam2 = 0
-        self.Ang_y_cam2 = 0
-        self.Ang_z_cam2 = 0
+        self.Ang_cam2 = 0
         self.Trans_x_cam2 = 0
         self.Trans_y_cam2 = 0
         self.Trans_z_cam2 = 4
@@ -34,18 +69,13 @@ class TKExample():
                            [0, self.Focal, self.Imgheight / 2],
                            [0, 0, 1]], float)
         #カメラ外部パラメータ
-        aglRadx = np.deg2rad(self.Ang_x_cam1)
-        aglRady = np.deg2rad(self.Ang_y_cam1)
-        aglRadz = np.deg2rad(self.Ang_z_cam1)
-        Rmat, jac = cv2.Rodrigues(np.array([[aglRadx, aglRady, aglRadz]], float))
-        self.P1 = np.array([[Rmat[0][0], Rmat[0][1], Rmat[0][2], self.Trans_x_cam1],
-                              [Rmat[1][0], Rmat[1][1], Rmat[1][2], self.Trans_y_cam1],
-                              [Rmat[2][0], Rmat[2][1], Rmat[2][2], self.Trans_z_cam1]])
+        self.P1 = np.array([[1, 0, 0, 0],
+                            [0, 1, 0, 0],
+                            [0, 0, 1, 0]])
 
-        aglRadx = np.deg2rad(self.Ang_x_cam2)
-        aglRady = np.deg2rad(self.Ang_y_cam2)
-        aglRadz = np.deg2rad(self.Ang_z_cam2)
-        Rmat, jac = cv2.Rodrigues(np.array([[aglRadx, aglRady, aglRadz]], float))
+        nVec = np.array([1,0,0])
+        Rmat = calcRmat(self.Ang_cam2, nVec)
+        # Rmat, jac = cv2.Rodrigues(np.array([[aglRadx, aglRady, aglRadz]], float))
         self.P2 = np.array([[Rmat[0][0], Rmat[0][1], Rmat[0][2], self.Trans_x_cam2],
                               [Rmat[1][0], Rmat[1][1], Rmat[1][2], self.Trans_y_cam2],
                               [Rmat[2][0], Rmat[2][1], Rmat[2][2], self.Trans_z_cam2]])
@@ -54,16 +84,25 @@ class TKExample():
         self.ll = [[0, 1], [0, 2], [0, 3], [1, 4], [1, 5], [2, 4],
               [2, 6], [3, 5], [3, 6], [4, 7], [5, 7], [6, 7]]
 
-        self.Xpt = [[2, 0, 2, 3, 0.5, 3, 3, 3],
+        self.Xpt = [[2, 0, 2, 3, 0.6, 3, 3, 3],
                     [2, 2, 3, 2, 4, 2, 3, 3],
                     [4, 1, 4, 4, 1, 1, 4, 1],
                     [1, 1, 1, 1, 1, 1, 1, 1]]
+
+        # Xp_add = [[1, 1, 2.5, 1.8, 1.8, 3, 3],
+        #           [2, 2.5, 2.5, 3, 3, 3, 2.5],
+        #           [2.5, 2.5, 4, 2.5, 1, 2.5, 2.5],
+        #           [1, 1, 1, 1, 1, 1, 1]]
+        # self.Xpt[0].extend(Xp_add[0])
+        # self.Xpt[1].extend(Xp_add[1])
+        # self.Xpt[2].extend(Xp_add[2])
+        # self.Xpt[3].extend(Xp_add[3])
 
         # self.llcolor = ["g","c","c","m","m","g","c","g","c","m","m","g"]
         self.llcolor = ["m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m", "m"]
 
         # 3dから2d画像を作成
-        fig2d = plt.figure(figsize=(8, 6))
+        fig2d = plt.figure(figsize=(10, 6))
         self.ax1 = fig2d.add_subplot(325)
         self.ax2 = fig2d.add_subplot(326)
         self.draw2d()
@@ -74,9 +113,12 @@ class TKExample():
         self.ax_rcn = fig2d.add_subplot(322, projection='3d')
         self.draw3d_reconstracted()
 
-        self.ax_cam1 = fig2d.add_subplot(323, projection='3d')
-        self.ax_cam2 = fig2d.add_subplot(324, projection='3d')
-        self.draw3d_obj_cam()
+        self.ax_rcn_est = fig2d.add_subplot(323, projection='3d')
+        self.draw3d_reconstracted_estP()
+
+        # self.ax_cam1 = fig2d.add_subplot(334, projection='3d')
+        # self.ax_cam2 = fig2d.add_subplot(335, projection='3d')
+        # self.draw3d_obj_cam()
 
         root = Tk.Tk()
 
@@ -107,65 +149,14 @@ class TKExample():
         self.et02.insert(Tk.END, "480")
         self.et02.grid(row=4, column=3, sticky=Tk.W)
 
-        self.lb03 = Tk.Label(root, text='Cam1 external Param')
-        self.lb03.grid(row=5, column=0, sticky=Tk.W)
-
-        self.lb04 = Tk.Label(root, text='ang x')
-        self.lb04.grid(row=6, column=0, sticky=Tk.W)
-        self.et04 = Tk.Entry(root)
-        self.et04.insert(Tk.END, "0")
-        self.et04.grid(row=6, column=1, sticky=Tk.W)
-
-        self.lb05 = Tk.Label(root, text='ang y')
-        self.lb05.grid(row=6, column=2, sticky=Tk.W)
-        self.et05 = Tk.Entry(root)
-        self.et05.insert(Tk.END, "0")
-        self.et05.grid(row=6, column=3, sticky=Tk.W)
-
-        self.lb06 = Tk.Label(root, text='ang z')
-        self.lb06.grid(row=6, column=4, sticky=Tk.W)
-        self.et06 = Tk.Entry(root)
-        self.et06.insert(Tk.END, "0")
-        self.et06.grid(row=6, column=5, sticky=Tk.W)
-
-        self.lb07 = Tk.Label(root, text='trans x')
-        self.lb07.grid(row=7, column=0, sticky=Tk.W)
-        self.et07 = Tk.Entry(root)
-        self.et07.insert(Tk.END, "0")
-        self.et07.grid(row=7, column=1, sticky=Tk.W)
-
-        self.lb08 = Tk.Label(root, text='trans y')
-        self.lb08.grid(row=7, column=2, sticky=Tk.W)
-        self.et08 = Tk.Entry(root)
-        self.et08.insert(Tk.END, "0")
-        self.et08.grid(row=7, column=3, sticky=Tk.W)
-
-        self.lb09 = Tk.Label(root, text='trans z')
-        self.lb09.grid(row=7, column=4, sticky=Tk.W)
-        self.et09 = Tk.Entry(root)
-        self.et09.insert(Tk.END, "0")
-        self.et09.grid(row=7, column=5, sticky=Tk.W)
-
         self.lb10 = Tk.Label(root, text='Cam2 external Param')
         self.lb10.grid(row=8, column=0, sticky=Tk.W)
 
-        self.lb11 = Tk.Label(root, text='ang x')
+        self.lb11 = Tk.Label(root, text='ang')
         self.lb11.grid(row=9, column=0, sticky=Tk.W)
         self.et11 = Tk.Entry(root)
         self.et11.insert(Tk.END, "0")
         self.et11.grid(row=9, column=1, sticky=Tk.W)
-
-        self.lb12 = Tk.Label(root, text='ang y')
-        self.lb12.grid(row=9, column=2, sticky=Tk.W)
-        self.et12 = Tk.Entry(root)
-        self.et12.insert(Tk.END, "0")
-        self.et12.grid(row=9, column=3, sticky=Tk.W)
-
-        self.lb13 = Tk.Label(root, text='ang z')
-        self.lb13.grid(row=9, column=4, sticky=Tk.W)
-        self.et13 = Tk.Entry(root)
-        self.et13.insert(Tk.END, "0")
-        self.et13.grid(row=9, column=5, sticky=Tk.W)
 
         self.lb14 = Tk.Label(root, text='trans x')
         self.lb14.grid(row=10, column=0, sticky=Tk.W)
@@ -190,56 +181,32 @@ class TKExample():
     def updatePrm(self):
         focal = float(self.et00.get())
         imgwidth, imgheight = float(self.et01.get()), float(self.et02.get())
-        ang_x_cam1 = float(self.et04.get())
-        ang_y_cam1 = float(self.et05.get())
-        ang_z_cam1 = float(self.et06.get())
-        trans_x_cam1 = float(self.et07.get())
-        trans_y_cam1 = float(self.et08.get())
-        trans_z_cam1 = float(self.et09.get())
-        ang_x_cam2 = float(self.et11.get())
-        ang_y_cam2 = float(self.et12.get())
-        ang_z_cam2 = float(self.et13.get())
+        ang_cam2 = float(self.et11.get())
         trans_x_cam2 = float(self.et14.get())
         trans_y_cam2 = float(self.et15.get())
         trans_z_cam2 = float(self.et16.get())
         self.setCamprm(focal, imgwidth, imgheight,
-                  ang_x_cam1, ang_y_cam1, ang_z_cam1, trans_x_cam1, trans_y_cam1, trans_z_cam1,
-                  ang_x_cam2, ang_y_cam2, ang_z_cam2, trans_x_cam2, trans_y_cam2, trans_z_cam2)
+                  ang_cam2,  trans_x_cam2, trans_y_cam2, trans_z_cam2)
         self.draw2d()
-        self.draw3d_obj_wld()
-        self.draw3d_obj_cam()
+        # self.draw3d_obj_wld()
+        # self.draw3d_obj_cam()
+        self.draw3d_reconstracted()
+        self.draw3d_reconstracted_estP()
         self.canvas.draw()
 
     def setCamprm(self, focal, imgwidth, imgheight,
-                  ang_x_cam1, ang_y_cam1, ang_z_cam1, trans_x_cam1, trans_y_cam1, trans_z_cam1,
-                  ang_x_cam2, ang_y_cam2, ang_z_cam2, trans_x_cam2, trans_y_cam2, trans_z_cam2):
+                  ang_cam2, trans_x_cam2, trans_y_cam2, trans_z_cam2):
         self.Focal = focal
         self.Imgwidth, self.Imgheight = imgwidth, imgheight
-        self.Ang_x_cam1 = ang_x_cam1
-        self.Ang_y_cam1 = ang_y_cam1
-        self.Ang_z_cam1 = ang_z_cam1
-        self.Trans_x_cam1 = trans_x_cam1
-        self.Trans_y_cam1 = trans_y_cam1
-        self.Trans_z_cam1 = trans_z_cam1
-        self.Ang_x_cam2 = ang_x_cam2
-        self.Ang_y_cam2 = ang_y_cam2
-        self.Ang_z_cam2 = ang_z_cam2
+        self.Ang_cam2 = ang_cam2
         self.Trans_x_cam2 = trans_x_cam2
         self.Trans_y_cam2 = trans_y_cam2
         self.Trans_z_cam2 = trans_z_cam2
         self.K = np.array([[self.Focal, 0, self.Imgwidth / 2], [0, self.Focal, self.Imgheight / 2], [0, 0, 1]], float)
-        aglRadx = np.deg2rad(self.Ang_x_cam1)
-        aglRady = np.deg2rad(self.Ang_y_cam1)
-        aglRadz = np.deg2rad(self.Ang_z_cam1)
-        Rmat, jac = cv2.Rodrigues(np.array([[aglRadx, aglRady, aglRadz]], float))
-        self.P1 = np.array([[Rmat[0][0], Rmat[0][1], Rmat[0][2], self.Trans_x_cam1],
-                              [Rmat[1][0], Rmat[1][1], Rmat[1][2], self.Trans_y_cam1],
-                              [Rmat[2][0], Rmat[2][1], Rmat[2][2], self.Trans_z_cam1]])
 
-        aglRadx = np.deg2rad(self.Ang_x_cam2)
-        aglRady = np.deg2rad(self.Ang_y_cam2)
-        aglRadz = np.deg2rad(self.Ang_z_cam2)
-        Rmat, jac = cv2.Rodrigues(np.array([[aglRadx, aglRady, aglRadz]], float))
+        nVec = np.array([1,0,0])
+        Rmat = calcRmat(self.Ang_cam2, nVec)
+        # Rmat, jac = cv2.Rodrigues(np.array([[aglRadx, aglRady, aglRadz]], float))
         self.P2 = np.array([[Rmat[0][0], Rmat[0][1], Rmat[0][2], self.Trans_x_cam2],
                               [Rmat[1][0], Rmat[1][1], Rmat[1][2], self.Trans_y_cam2],
                               [Rmat[2][0], Rmat[2][1], Rmat[2][2], self.Trans_z_cam2]])
@@ -339,6 +306,33 @@ class TKExample():
             #self.ax2.plot(x, y, marker='.', markersize=5, color='blue')
             self.ax2.plot(x, y, marker='.', markersize=5, color=self.llcolor[i])
 
+        # draw epipolar line
+        ## calcurate F: x1 * F * x2
+        F = sfm.compute_fundamental(x1p, x2p)
+        ## calc epi poler
+        e1 = sfm.compute_epipole(F)
+        e2 = sfm.compute_epipole(F.T)
+
+        print("F:", F)
+
+        numLine = len(x1p[0,:])
+        for i in range(numLine):
+            # epiline on img1
+            line = dot(F, x2p[:,i])
+            t = linspace(0, self.Imgwidth, 100)
+            lt = array([(line[2] + line[0] * tt) / (-line[1]) for tt in t])
+            # ndx = (lt >= 0) & (lt < self.Imgheight)
+            # self.ax1.plot(t[ndx], lt[ndx], linewidth=1)
+            self.ax1.plot(t, lt, linewidth=1)
+            self.ax1.plot(e1[0]/e1[2], e1[1]/e1[2],'r*')
+
+            # epiline on img1
+            line = dot(F.T, x1p[:,i])
+            t = linspace(0, self.Imgwidth, 100)
+            lt = array([(line[2] + line[0] * tt) / (-line[1]) for tt in t])
+            self.ax2.plot(t, lt, linewidth=1)
+            self.ax2.plot(e2[0]/e2[2], e2[1]/e2[2],'r*')
+
     def draw3d_obj_wld(self):
         self.ax_wld.cla()
 
@@ -413,13 +407,13 @@ class TKExample():
     def draw3d_reconstracted(self):
         self.ax_rcn.cla()
 
-        # カメラ行列
-        A1 = self.K.dot(self.P1)
-        A2 = self.K.dot(self.P2)
+        # カメラ行列（内部・外部）
+        M1 = self.K.dot(self.P1)
+        M2 = self.K.dot(self.P2)
 
         #　画像座標 ( sx, sy, s )
-        x1p = A1.dot(self.Xpt)
-        x2p = A2.dot(self.Xpt)
+        x1p = M1.dot(self.Xpt)
+        x2p = M2.dot(self.Xpt)
         
         # sで正規化 (x, y, 1)
         for i in range(3):
@@ -427,7 +421,7 @@ class TKExample():
             x2p[i] /= x2p[2]
 
         # 三角測量と正規化 (X,Y,Z,1)
-        X = sfm.triangulate(x1p, x2p, A1, A2)
+        X = sfm.triangulate(x1p, x2p, M1, M2)
 
         self.ax_rcn.set_xlabel("x_wld_rcn")
         self.ax_rcn.set_ylabel("y_wld_rcn")
@@ -442,74 +436,133 @@ class TKExample():
             z = np.array([X[2][l[0]], X[2][l[1]]])
             self.ax_rcn.plot(x, y, z, marker='.', markersize=5, color='red')
 
-    # def draw3d_reconstracted_estP(self):
-    #     self.ax_rcn.cla()
-    #
-    #     # カメラ座標
-    #     x1p = self.cam1.project(self.Xpt)
-    #     x2p = self.cam2.project(self.Xpt)
-    #
-    #     # 画像座標
-    #     x1p = np.dot(self.K, x1p)
-    #     x2p = np.dot(self.K, x2p)
-    #
-    #     pts1 = []
-    #     pts2 = []
-    #     for i in range(len(x1p[0])):
-    #         pts1.append([x1p[0][i], x1p[1][i]])
-    #         pts2.append([x2p[0][i], x2p[1][i]])
-    #     pts1 = np.int32(pts1)
-    #     pts2 = np.int32(pts2)
-    #
-    #     # 画像1, 画像2の特徴点を対応付ける行列Fを計算
-    #     F, mask = cv2.findFundamentalMat(pts1, pts2, cv2.FM_LMEDS)
-    #     mask = np.reshape(mask, (1, len(mask)))[0]
-    #     idx_mask = np.arange(len(mask))
-    #     idx_mask = idx_mask[mask == 1]
-    #     E = np.dot(self.K.T, np.dot(F, self.K))
-    #
-    #     # 同次座標にしinv(K)を使って正規化する
-    #     x1 = homography.make_homog(pts1.T)
-    #     x2 = homography.make_homog(pts2.T)
-    #
-    #     x1n = np.dot(np.linalg.inv(self.K), x1)
-    #     x2n = np.dot(np.linalg.inv(self.K), x2)
-    #
-    #     # # カメラ行列を計算する（P2は4つの解のリスト）
-    #     #P1 = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]])
-    #     P1 = self.P1
-    #     P2 = sfm.compute_P_from_essential(E)
-    #
-    #     # 2つのカメラの前に点のある解を選ぶ
-    #     ind = 0
-    #     maxres = 0
-    #     for i in range(4):
-    #         # triangulate inliers and compute depth for each camera
-    #         # インライアを三角測量し各カメラからの奥行きを計算する
-    #         X = sfm.triangulate(x1[:, idx_mask], x2[:, idx_mask], P1, P2[i])
-    #         d1 = np.dot(P1, X)[2]
-    #         d2 = np.dot(P2[i], X)[2]
-    #         if sum(d1 > 0) + sum(d2 > 0) > maxres:
-    #             maxres = sum(d1 > 0) + sum(d2 > 0)
-    #             ind = i
-    #             infront = (d1 > 0) & (d2 > 0)
-    #
-    #     # インライアを三角測量し両方のカメラの正面に含まれていない点を削除
-    #     X = sfm.triangulate(x1n[:, idx_mask], x2n[:, idx_mask], P1, P2[ind])
-    #     X = X[:, infront]
-    #
-    #     self.ax_rcn.set_xlabel("x_wld_rcn")
-    #     self.ax_rcn.set_ylabel("y_wld_rcn")
-    #     self.ax_rcn.set_zlabel("z_wld_rcn")
-    #     # self.ax_rcn.set_xlim([-5, 5])
-    #     # self.ax_rcn.set_ylim([-5, 5])
-    #     # self.ax_rcn.set_zlim([-5, 5])
-    #     self.ax_rcn.set_title("obj wld rcn")
-    #     for l in self.ll:
-    #         x = np.array([X[0][l[0]], X[0][l[1]]])
-    #         y = np.array([X[1][l[0]], X[1][l[1]]])
-    #         z = np.array([X[2][l[0]], X[2][l[1]]])
-    #         self.ax_rcn.plot(x, y, z, marker='.', markersize=5, color='red')
+    def draw3d_reconstracted_estP(self):
+        self.ax_rcn_est.cla()
+
+        # カメラ行列（内部・外部）
+        M1 = self.K.dot(self.P1)
+        M2 = self.K.dot(self.P2)
+
+        # 　画像座標 ( sx, sy, s )
+        x1p = M1.dot(self.Xpt)
+        x2p = M2.dot(self.Xpt)
+
+        # sで正規化 (x, y, 1)
+        for i in range(3):
+            x1p[i] /= x1p[2]
+            x2p[i] /= x2p[2]
+
+        # pts1 = []
+        # pts2 = []
+        # for i in range(len(x1p[0])):
+        #     pts1.append([x1p[0][i], x1p[1][i]])
+        #     pts2.append([x2p[0][i], x2p[1][i]])
+        # pts1 = np.int32(pts1)
+        # pts2 = np.int32(pts2)
+
+        # 画像1, 画像2の特徴点を対応付ける行列Fを計算
+        # F, mask = cv2.findFundamentalMat(pts1, pts2, cv2.FM_RANSAC)
+        # mask = np.reshape(mask, (1, len(mask)))[0]
+        # idx_mask = np.arange(len(mask))
+        # idx_mask = idx_mask[mask == 1]
+
+        x1n = np.dot(inv(self.K), x1p)
+        x2n = np.dot(inv(self.K), x2p)
+
+        # RANSACでEを推定
+        # Method_EstE = "RAN"
+        Method_EstE = ""
+        E = ""
+        inliers = ""
+        if Method_EstE is "RAN":
+            model = sfm.RansacModel()
+            E, inliers = sfm.F_from_ransac(x1n, x2n, model)
+        else:
+            E = sfm.compute_fundamental(x1n, x2n)
+            inliers = [ True for i in range(len(x1n[0,:]))]
+
+        print("E: ", E)
+
+        # # カメラ行列を計算する（P2は4つの解のリスト）
+        P1 = array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]])
+        P2, S, R1, R2, U, V = sfm.compute_P_from_essential_mod(E)
+
+        print("S: ", S)
+        print("S fro: ", np.linalg.norm(S, "fro"))
+
+        print("R1: ", R1)
+        print("R2: ", R2)
+        print("R1 deg: ", calcRmatDeg(R1))
+        print("R2 deg: ", calcRmatDeg(R2))
+        P2_R = self.P2[:,0:3]
+        print("P2_R: ", P2_R)
+        # print("U: ", U)
+        # print("V: ", V)
+        # print("S*R1: ", S.dot(R1))
+        # print("S*R2: ", S.dot(R2))
+
+
+        # 2つのカメラの前に点のある解を選ぶ
+        ind = 0
+        maxres = 0
+        for i in range(4):
+            # triangulate inliers and compute depth for each camera
+            # インライアを三角測量し各カメラからの奥行きを計算する
+            X = sfm.triangulate(x1n[:, inliers], x2n[:, inliers], P1, P2[i])
+            d1 = np.dot(P1, X)[2]
+            d2 = np.dot(P2[i], X)[2]
+            if sum(d1 > 0) + sum(d2 > 0) > maxres:
+                maxres = sum(d1 > 0) + sum(d2 > 0)
+                ind = i
+                infront = (d1 > 0) & (d2 > 0)
+
+        #全表示用
+        M1 = self.K.dot(P1)
+        M2_est = self.K.dot(P2[ind])
+        X = sfm.triangulate(x1p, x2p, M1, M2_est)
+
+        # print("P2 est:", P2[ind])
+        # print("P2: ", self.P2)
+
+        # for i in range(4):
+        #     print("P2 est[ ", i, " ]: ", P2[i])
+        #
+        # M2 = self.K.dot(self.P2)
+        # print("M2: ", M2)
+
+        self.ax_rcn_est.set_xlabel("x_wld_rcn")
+        self.ax_rcn_est.set_ylabel("y_wld_rcn")
+        self.ax_rcn_est.set_zlabel("z_wld_rcn")
+        # self.ax_rcn_est.set_xlim([-5, 5])
+        # self.ax_rcn_est.set_ylim([-5, 5])
+        # self.ax_rcn_est.set_zlim([-5, 5])
+        self.ax_rcn_est.set_title("obj wld rcn est")
+        for l in self.ll:
+            x = np.array([X[0][l[0]], X[0][l[1]]])
+            y = np.array([X[1][l[0]], X[1][l[1]]])
+            z = np.array([X[2][l[0]], X[2][l[1]]])
+            self.ax_rcn_est.plot(x, y, z, marker='.', markersize=5, color='red')
+
+        # # 対応が見つからなかった点
+        # x = X[0,[ not val for val in mask]]
+        # y = X[1,[ not val for val in mask]]
+        # z = X[2,[ not val for val in mask]]
+        # self.ax_rcn_est.plot(x, y, z, marker='.', markersize=5, color='black', linestyle = "")
+
+        # カメラより奥にあると推定された点
+        # X = sfm.triangulate(x1[:, idx_mask], x2[:, idx_mask], P1, P2[i])
+        x = X[0,[ not val for val in infront]]
+        y = X[1,[ not val for val in infront]]
+        z = X[2,[ not val for val in infront]]
+        self.ax_rcn_est.plot(x, y, z, marker='.', markersize=5, color='blue', linestyle = "")
+
+        # #
+        # for i, inf in enumerate(infront):
+        #     if inf :
+        #         x = np.array([X[0][i], X[0][i]])
+        #         y = np.array([X[1][i], X[1][i]])
+        #         z = np.array([X[2][i], X[2][i]])
+        #         self.ax_rcn_est.scatter(x, y, z, markersize=5, color='black')
 
 if __name__ == '__main__':
     ex = TKExample()
