@@ -44,7 +44,7 @@ model = ssd_300(image_size=(img_height, img_width, 3),
                 nms_max_output_size=400)
 
 # load weight
-weights_path = 'ssd300_pascal_12_epoch-01_loss-4.8732_val_loss-6.4493.h5'
+weights_path = 'mypartsDetectionSSD_class1_epoch-01_loss-4.9658_val_loss-6.6276.h5'
 model.load_weights(weights_path, by_name=True)
 
 # 3: Compile the model so that Keras won't complain the next time you load it.
